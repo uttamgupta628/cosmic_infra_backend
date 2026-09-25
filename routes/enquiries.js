@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const Enquiry = require("../models/Enquiry");
 const { protect } = require("../middleware/auth");
+const { sendAdminNotification, buildNotificationHtml } = require("../utils/Mailer");
 
 // POST /api/enquiries  (PUBLIC - submitted from the website popup / project pages)
 router.post("/", async (req, res, next) => {
@@ -11,6 +12,18 @@ router.post("/", async (req, res, next) => {
       return res.status(400).json({ message: "Name and phone are required" });
     }
     const enquiry = await Enquiry.create({ name, phone, email, message, source, project, consent });
+
+    sendAdminNotification(
+      "New Website Enquiry",
+      buildNotificationHtml("New Website Enquiry", [
+        ["Name", name],
+        ["Phone", phone],
+        ["Email", email],
+        ["Source", source],
+        ["Message", message],
+      ])
+    );
+
     res.status(201).json({ message: "Thank you! We will get back to you shortly.", enquiry });
   } catch (err) {
     next(err);

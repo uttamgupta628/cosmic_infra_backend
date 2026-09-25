@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const Redevelopment = require("../models/Redevelopment");
 const { protect } = require("../middleware/auth");
+const { sendAdminNotification, buildNotificationHtml } = require("../utils/Mailer");
 
 // POST /api/redevelopment  (PUBLIC - "Apply for Redevelopment" form)
 router.post("/", async (req, res, next) => {
@@ -11,6 +12,18 @@ router.post("/", async (req, res, next) => {
       return res.status(400).json({ message: "Name and phone are required" });
     }
     const application = await Redevelopment.create({ name, phone, email, propertyAddress, message });
+
+    sendAdminNotification(
+      "New Redevelopment Application",
+      buildNotificationHtml("New Redevelopment Application", [
+        ["Name", name],
+        ["Phone", phone],
+        ["Email", email],
+        ["Property Address", propertyAddress],
+        ["Message", message],
+      ])
+    );
+
     res.status(201).json({ message: "Application received. Our team will contact you.", application });
   } catch (err) {
     next(err);
