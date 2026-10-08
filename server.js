@@ -11,6 +11,7 @@ const cors = require("cors");
 const morgan = require("morgan");
 const connectDB = require("./config/db");
 const { notFound, errorHandler } = require("./middleware/errorHandler");
+const { connectRedis } = require("./config/redis");
 
 const authRoutes = require("./routes/auth");
 const projectRoutes = require("./routes/projects");
@@ -21,6 +22,7 @@ const dashboardRoutes = require("./routes/dashboard");
 const uploadRoutes = require("./routes/uploads");
 
 connectDB();
+connectRedis();
 
 const app = express();
 
