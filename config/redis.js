@@ -18,7 +18,7 @@ const connectRedis = async () => {
     console.error("Redis connection error:", err.message);
   }
 };
-
+// redis
 module.exports = {
   redisClient,
   connectRedis,
