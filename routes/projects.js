@@ -3,45 +3,33 @@ const router = express.Router();
 
 const Project = require("../models/Project");
 const { protect } = require("../middleware/auth");
-const { redisClient } = require("../config/redis");
+const {
+  cacheGet,
+  cacheSet,
+  cacheDel,
+  cacheKeysByPattern,
+} = require("../config/redis");
 
 // =====================================================
 // Helper: Delete project-related cache
 // =====================================================
 
 const clearProjectCache = async (project) => {
-  try {
-    const keys = [
-      "projects:all",
-      "projects:stats",
-    ];
+  const keys = ["projects:stats"];
 
-    if (project?._id) {
-      keys.push(`project:id:${project._id}`);
-    }
-
-    if (project?.slug) {
-      keys.push(`project:slug:${project.slug}`);
-    }
-
-    // Also clear filtered project caches
-    const cachedKeys = await redisClient.keys("projects:*");
-
-    if (cachedKeys.length > 0) {
-      keys.push(...cachedKeys);
-    }
-
-    // Remove duplicate keys
-    const uniqueKeys = [...new Set(keys)];
-
-    if (uniqueKeys.length > 0) {
-      await redisClient.del(uniqueKeys);
-    }
-
-    console.log("Project cache cleared");
-  } catch (error) {
-    console.error("Redis cache clear error:", error.message);
+  if (project?._id) {
+    keys.push(`project:id:${project._id}`);
   }
+
+  if (project?.slug) {
+    keys.push(`project:slug:${project.slug}`);
+  }
+
+  // All list caches (projects:list:...) and anything else under projects:*
+  const listKeys = await cacheKeysByPattern("projects:*");
+  keys.push(...listKeys);
+
+  await cacheDel([...new Set(keys)]);
 };
 
 
@@ -55,7 +43,6 @@ router.get("/", async (req, res, next) => {
   try {
     const { status, search, city, publicOnly } = req.query;
 
-    // Create unique cache key based on query
     const cacheKey = `projects:list:${JSON.stringify({
       status: status || "",
       search: search || "",
@@ -63,24 +50,13 @@ router.get("/", async (req, res, next) => {
       publicOnly: publicOnly || "",
     })}`;
 
-    // -------------------------------------------------
-    // 1. Check Redis
-    // -------------------------------------------------
-
-    const cachedProjects = await redisClient.get(cacheKey);
-
-    if (cachedProjects) {
-      console.log("Projects fetched from Redis");
-
-      return res.json(JSON.parse(cachedProjects));
+    // 1. Redis (returns null if missing or Redis is down)
+    const cached = await cacheGet(cacheKey);
+    if (cached) {
+      return res.json(cached);
     }
 
-    // -------------------------------------------------
-    // 2. Redis miss → MongoDB
-    // -------------------------------------------------
-
-    console.log("Projects fetched from MongoDB");
-
+    // 2. MongoDB
     const filter = {};
 
     if (status && status !== "all") {
@@ -103,21 +79,10 @@ router.get("/", async (req, res, next) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // -------------------------------------------------
-    // 3. Save result in Redis
-    // Cache for 5 minutes
-    // -------------------------------------------------
-
-    await redisClient.set(
-      cacheKey,
-      JSON.stringify(projects),
-      {
-        EX: 300,
-      }
-    );
+    // 3. Cache for 5 minutes
+    await cacheSet(cacheKey, projects, 300);
 
     return res.json(projects);
-
   } catch (err) {
     next(err);
   }
@@ -132,50 +97,24 @@ router.get("/stats", protect, async (req, res, next) => {
   try {
     const cacheKey = "projects:stats";
 
-    // -------------------------------------------------
-    // Check Redis
-    // -------------------------------------------------
-
-    const cachedStats = await redisClient.get(cacheKey);
-
-    if (cachedStats) {
-      console.log("Project stats fetched from Redis");
-
-      return res.json(JSON.parse(cachedStats));
+    const cached = await cacheGet(cacheKey);
+    if (cached) {
+      return res.json(cached);
     }
 
-    // -------------------------------------------------
-    // Redis miss → MongoDB
-    // -------------------------------------------------
+    const [total, ongoing, completed, upcoming] = await Promise.all([
+      Project.countDocuments(),
+      Project.countDocuments({ status: "ongoing" }),
+      Project.countDocuments({ status: "completed" }),
+      Project.countDocuments({ status: "upcoming" }),
+    ]);
 
-    console.log("Project stats fetched from MongoDB");
-
-    const [total, ongoing, completed, upcoming] =
-      await Promise.all([
-        Project.countDocuments(),
-        Project.countDocuments({ status: "ongoing" }),
-        Project.countDocuments({ status: "completed" }),
-        Project.countDocuments({ status: "upcoming" }),
-      ]);
-
-    const stats = {
-      total,
-      ongoing,
-      completed,
-      upcoming,
-    };
+    const stats = { total, ongoing, completed, upcoming };
 
     // Cache for 2 minutes
-    await redisClient.set(
-      cacheKey,
-      JSON.stringify(stats),
-      {
-        EX: 120,
-      }
-    );
+    await cacheSet(cacheKey, stats, 120);
 
     res.json(stats);
-
   } catch (err) {
     next(err);
   }
@@ -190,35 +129,18 @@ router.get("/:idOrSlug", async (req, res, next) => {
   try {
     const { idOrSlug } = req.params;
 
-    const isObjectId = idOrSlug.match(
-      /^[0-9a-fA-F]{24}$/
-    );
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(idOrSlug);
 
     const cacheKey = isObjectId
       ? `project:id:${idOrSlug}`
       : `project:slug:${idOrSlug}`;
 
-    // -------------------------------------------------
-    // 1. Check Redis
-    // -------------------------------------------------
-
-    const cachedProject = await redisClient.get(cacheKey);
-
-    if (cachedProject) {
-      console.log("Project fetched from Redis");
-
-      return res.json(JSON.parse(cachedProject));
+    const cached = await cacheGet(cacheKey);
+    if (cached) {
+      return res.json(cached);
     }
 
-    // -------------------------------------------------
-    // 2. Redis miss → MongoDB
-    // -------------------------------------------------
-
-    console.log("Project fetched from MongoDB");
-
-    const query = isObjectId
-      ? { _id: idOrSlug }
-      : { slug: idOrSlug };
+    const query = isObjectId ? { _id: idOrSlug } : { slug: idOrSlug };
 
     const project = await Project.findOne(query).lean();
 
@@ -228,21 +150,10 @@ router.get("/:idOrSlug", async (req, res, next) => {
       });
     }
 
-    // -------------------------------------------------
-    // 3. Save in Redis
     // Cache for 10 minutes
-    // -------------------------------------------------
-
-    await redisClient.set(
-      cacheKey,
-      JSON.stringify(project),
-      {
-        EX: 600,
-      }
-    );
+    await cacheSet(cacheKey, project, 600);
 
     return res.json(project);
-
   } catch (err) {
     next(err);
   }
@@ -255,14 +166,11 @@ router.get("/:idOrSlug", async (req, res, next) => {
 
 router.post("/", protect, async (req, res, next) => {
   try {
-    // Save to MongoDB first
     const project = await Project.create(req.body);
 
-    // Clear cache
     await clearProjectCache(project);
 
     res.status(201).json(project);
-
   } catch (err) {
     if (err.code === 11000) {
       return res.status(400).json({
@@ -281,7 +189,6 @@ router.post("/", protect, async (req, res, next) => {
 
 router.put("/:id", protect, async (req, res, next) => {
   try {
-    // Get old project first
     const oldProject = await Project.findById(req.params.id);
 
     if (!oldProject) {
@@ -290,7 +197,6 @@ router.put("/:id", protect, async (req, res, next) => {
       });
     }
 
-    // Update MongoDB
     const project = await Project.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -300,12 +206,11 @@ router.put("/:id", protect, async (req, res, next) => {
       }
     );
 
-    // Clear old + new cache
+    // Clear old + new cache (covers slug changes)
     await clearProjectCache(oldProject);
     await clearProjectCache(project);
 
     res.json(project);
-
   } catch (err) {
     next(err);
   }
@@ -318,7 +223,6 @@ router.put("/:id", protect, async (req, res, next) => {
 
 router.delete("/:id", protect, async (req, res, next) => {
   try {
-    // Get project before deleting
     const project = await Project.findById(req.params.id);
 
     if (!project) {
@@ -327,16 +231,13 @@ router.delete("/:id", protect, async (req, res, next) => {
       });
     }
 
-    // Delete from MongoDB
     await Project.findByIdAndDelete(req.params.id);
 
-    // Delete Redis cache
     await clearProjectCache(project);
 
     res.json({
       message: "Project deleted",
     });
-
   } catch (err) {
     next(err);
   }
