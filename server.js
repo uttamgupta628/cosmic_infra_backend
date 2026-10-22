@@ -22,13 +22,15 @@ const dashboardRoutes = require("./routes/dashboard");
 const uploadRoutes = require("./routes/uploads");
 
 connectDB();
-connectRedis();
+connectRedis(); // non-blocking: server starts even if Redis is down
 
 const app = express();
 
 app.use(
   cors({
-    origin: process.env.CLIENT_ORIGIN ? process.env.CLIENT_ORIGIN.split(",") : "*",
+    origin: process.env.CLIENT_ORIGIN
+      ? process.env.CLIENT_ORIGIN.split(",").map((s) => s.trim())
+      : "*",
   })
 );
 app.use(express.json());
@@ -50,4 +52,8 @@ app.use(notFound);
 app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+server.requestTimeout = 0;
+server.headersTimeout = 70 * 1000;
+server.keepAliveTimeout = 65 * 1000;

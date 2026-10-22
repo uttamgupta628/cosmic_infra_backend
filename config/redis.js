@@ -1,6 +1,6 @@
 const { createClient } = require("redis");
 
-const MAX_RETRIES = 10;
+const DEFAULT_TTL = 300;
 
 if (!process.env.REDIS_URL) {
   console.warn(
@@ -9,18 +9,10 @@ if (!process.env.REDIS_URL) {
 }
 
 const redisClient = createClient({
-  url: process.env.REDIS_URL,
+  ...(process.env.REDIS_URL && { url: process.env.REDIS_URL }),
   socket: {
-    // Back off up to 5s between attempts, then give up instead of retrying forever
-    reconnectStrategy: (retries) => {
-      if (retries >= MAX_RETRIES) {
-        console.error(
-          `Redis: giving up after ${MAX_RETRIES} reconnect attempts. Caching disabled.`
-        );
-        return false;
-      }
-      return Math.min(retries * 500, 5000);
-    },
+    // Keep retrying forever, backing off up to 5s, so cache recovers after outages
+    reconnectStrategy: (retries) => Math.min(retries * 500, 5000),
   },
 });
 
@@ -30,7 +22,6 @@ const redisClient = createClient({
 let lastErrorLog = 0;
 
 const describeError = (err) => {
-  // AggregateError (e.g. IPv4 + IPv6 both refused) has an empty message
   if (Array.isArray(err?.errors) && err.errors.length > 0) {
     return err.errors
       .map((e) => `${e.code || e.name}: ${e.message || `${e.address}:${e.port}`}`)
@@ -48,17 +39,14 @@ redisClient.on("error", (err) => {
 
 redisClient.on("ready", () => console.log("Redis ready"));
 
-const connectRedis = async () => {
-  if (!process.env.REDIS_URL) return;
+// Non-blocking: don't hold up server startup if Redis is down.
+// node-redis keeps reconnecting in the background after the first failure.
+const connectRedis = () => {
+  if (!process.env.REDIS_URL || redisClient.isOpen) return;
 
-  try {
-    if (!redisClient.isOpen) {
-      await redisClient.connect();
-      console.log("Redis connected");
-    }
-  } catch (err) {
-    console.error("Redis connection error:", describeError(err));
-  }
+  redisClient.connect().catch((err) => {
+    console.error("Redis initial connect failed:", describeError(err));
+  });
 };
 
 // -----------------------------------------------------
@@ -75,7 +63,7 @@ const cacheGet = async (key) => {
   }
 };
 
-const cacheSet = async (key, data, ttlSeconds) => {
+const cacheSet = async (key, data, ttlSeconds = DEFAULT_TTL) => {
   if (!redisClient.isReady) return;
   try {
     await redisClient.set(key, JSON.stringify(data), { EX: ttlSeconds });
@@ -85,9 +73,11 @@ const cacheSet = async (key, data, ttlSeconds) => {
 };
 
 const cacheDel = async (keys) => {
-  if (!redisClient.isReady || keys.length === 0) return;
+  if (!redisClient.isReady) return;
+  const list = (Array.isArray(keys) ? keys : [keys]).filter(Boolean);
+  if (list.length === 0) return;
   try {
-    await redisClient.del(keys);
+    await redisClient.del(list);
   } catch (err) {
     console.error("Cache del error:", describeError(err));
   }
