@@ -197,6 +197,10 @@ router.put("/:id", protect, async (req, res, next) => {
       });
     }
 
+    // TEMP DEBUG: remove once the brochure issue is solved
+    console.log("PUT body brochureUrl:", JSON.stringify(req.body.brochureUrl));
+    console.log("Schema has brochureUrl:", !!Project.schema.path("brochureUrl"));
+
     const project = await Project.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -215,7 +219,6 @@ router.put("/:id", protect, async (req, res, next) => {
     next(err);
   }
 });
-
 
 // =====================================================
 // DELETE /api/projects/:id

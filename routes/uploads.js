@@ -41,6 +41,13 @@ router.post(
       const folder = req.body.folder || "cosmic-infra/brochures";
       const result = await uploadBrochureToCloudinary(req.file.path, { folder });
 
+      // Without a URL the form would silently save nothing, so fail loudly
+      if (!result?.secure_url) {
+        return res
+          .status(502)
+          .json({ message: "Upload to Cloudinary did not return a URL" });
+      }
+
       res.status(201).json({
         url: result.secure_url,
         publicId: result.public_id,
